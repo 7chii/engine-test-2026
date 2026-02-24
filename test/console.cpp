@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <algorithm>
+#include "physics.h"
 
 #include "shape.h"
 
@@ -41,6 +42,9 @@ static void processCommand(Scene& scene, const std::string& cmd) {
         float x = std::stof(tok[2]), y = std::stof(tok[3]), z = std::stof(tok[4]);
         float m = extractMassFromTokens(tok, 1.0f);
         Shape s; s.pos = glm::vec3(x, y, z); s.scale = glm::vec3(1.0f); s.mass = m;
+        s.id = (int)scene.pyramidsRef().size();
+        s.inertia = computeLocalInertiaTensor(s);
+        s.invInertia = glm::inverse(s.inertia);
         pyramids.push_back(s);
         return;
     }
@@ -48,6 +52,9 @@ static void processCommand(Scene& scene, const std::string& cmd) {
         float x = std::stof(tok[2]), y = std::stof(tok[3]), z = std::stof(tok[4]);
         float m = extractMassFromTokens(tok, 1.0f);
         Shape s; s.pos = glm::vec3(x, y, z); s.scale = glm::vec3(1.0f); s.mass = m;
+        s.id = (int)scene.spheresRef().size();
+        s.inertia = computeLocalInertiaTensor(s);
+        s.invInertia = glm::inverse(s.inertia);
         spheres.push_back(s);
         return;
     }
@@ -59,6 +66,10 @@ static void processCommand(Scene& scene, const std::string& cmd) {
             float dx = std::stof(tok[di + 1]), dy = std::stof(tok[di + 2]), dz = std::stof(tok[di + 3]);
             float m = extractMassFromTokens(tok, 1.0f);
             Shape s; s.pos = glm::vec3(x, y, z); s.scale = glm::vec3(dx, dy, dz); s.mass = m;
+            s.type = ShapeType::Rect;
+            s.id = (int)scene.rectsRef().size();
+            s.inertia = computeLocalInertiaTensor(s);
+            s.invInertia = glm::inverse(s.inertia);
             rects.push_back(s);
         }
         return;

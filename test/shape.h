@@ -14,6 +14,10 @@ struct Shape {
     ShapeType type = ShapeType::None;
     int id = -1;
 
+    glm::vec3 lastGroundedPos = glm::vec3(0.0f);
+    glm::quat lastGroundedRot = glm::quat(1, 0, 0, 0);
+    float groundedStableTimer = 0.0f;
+
     // transf
     glm::vec3 pos = glm::vec3(0.0f);
     glm::vec3 scale = glm::vec3(1.0f);
@@ -26,8 +30,8 @@ struct Shape {
 
     // mov rot
     glm::vec3 angularVel = glm::vec3(0.0f);
-    float inertia = 1.0f;
-    float invInertia = 1.0f; // cache inercia
+    glm::mat3 inertia = glm::mat3(1.0f);     // Matriz de inércia local
+    glm::mat3 invInertia = glm::mat3(1.0f);
 
     // flag de state ( estabilidade)
     bool isStatic = false;    // se true massa e iner sao  infinitas
@@ -35,6 +39,7 @@ struct Shape {
 
     // controle de gravidade
     bool useGravity = true;
+    bool isGrounded = false;
 
     // slee[p wake
     bool isSleeping = false;
@@ -47,10 +52,6 @@ inline float getInvMass(const Shape& s) {
     return (s.mass > 0.0f) ? 1.0f / s.mass : 0.0f;
 }
 
-inline float getInvInertia(const Shape& s) {
-    if (s.isStatic || s.isDragging) return 0.0f;
-    return (s.inertia > 0.0f) ? 1.0f / s.inertia : 0.0f;
-}
 struct Contact {
     Shape* a;
     Shape* b;

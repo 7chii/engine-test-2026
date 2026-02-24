@@ -86,38 +86,120 @@ static float invMass(const Shape& s) {
     return s.mass > 0.0f ? 1.0f / s.mass : 0.0f;
 }
 
-
-void updatePhysics(float dt) {
+void updatePhysics(float dt)
+{
     if (dt <= 0.0f) return;
 
-    const glm::vec3 gravity(0, -9.81f, 0);
+    const glm::vec3 gravity(0.0f, -9.81f, 0.0f);
 
-    auto integrate = [&](Shape& s) {
-        s.vel += gravity * dt;
-        s.pos += s.vel * dt;
-    };
+    const float linearSleepThreshold = 0.05f;
+    const float angularSleepThreshold = 0.05f;
+    const float timeToSleep = 0.8f;
 
-    for (auto& s : pyramids) integrate(s);
-    for (auto& s : rects)    integrate(s);
-    for (auto& s : spheres)  integrate(s);
+    ////////////////////////////////////////////////////////////
+    // INTEGRAÇÃO
+    ////////////////////////////////////////////////////////////
+    auto integrate = [&](Shape& s)
+        {
+            if (s.isStatic || s.isDragging || s.isSleeping)
+                return;
 
-    // ground
-    auto ground = [&](Shape& s) {
-        float halfY = s.scale.y * 0.5f;
-        if (s.pos.y - halfY < 0.0f) {
-            s.pos.y = halfY;
-            if (s.vel.y < 0) s.vel.y = 0;
-            s.vel.x *= 0.98f;
-            s.vel.z *= 0.98f;
-        }
-    };
+            // NÃO aplicar gravidade se já está apoiado e quase parado
+            if (s.useGravity && !(s.isGrounded && glm::length2(s.vel) < 0.01f))
+                s.vel += gravity * dt;
+
+            s.vel *= std::exp(-0.1f * dt);
+            s.angularVel *= std::exp(-0.15f * dt);
+
+            s.pos += s.vel * dt;
+
+            if (glm::length2(s.angularVel) > 1e-8f)
+            {
+                glm::quat dq(0.0f,
+                    s.angularVel.x,
+                    s.angularVel.y,
+                    s.angularVel.z);
+
+                s.rot += 0.5f * dq * s.rot * dt;
+                s.rot = glm::normalize(s.rot);
+            }
+        };
+    ////////////////////////////////////////////////////////////
+    // COLISÃO COM O CHÃO (y = 0)
+    ////////////////////////////////////////////////////////////
+    auto ground = [&](Shape& s)
+        {
+            if (s.isStatic) return;
+
+            float halfY = s.scale.y * 0.5f;
+
+            float penetration = halfY - s.pos.y;
+
+            if (penetration > 0.0f)
+            {
+                // Corrige posição
+                s.pos.y = halfY;
+                s.isGrounded = true;
+
+                // Remove qualquer velocidade vertical
+                if (s.vel.y < 0.0f)
+                    s.vel.y = 0.0f;
+
+                // Fricção forte se já quase parado
+                if (std::abs(s.vel.x) < 0.05f) s.vel.x = 0.0f;
+                if (std::abs(s.vel.z) < 0.05f) s.vel.z = 0.0f;
+
+                s.vel.x *= 0.85f;
+                s.vel.z *= 0.85f;
+
+                // Mata micro rotação residual
+                if (glm::length2(s.angularVel) < 0.0005f)
+                    s.angularVel = glm::vec3(0.0f);
+            }
+            else
+            {
+                s.isGrounded = false;
+            }
+        };
 
     for (auto& s : pyramids) ground(s);
     for (auto& s : rects)    ground(s);
     for (auto& s : spheres)  ground(s);
+
+    ////////////////////////////////////////////////////////////
+    // SISTEMA DE SLEEP
+    ////////////////////////////////////////////////////////////
+    auto sleepSystem = [&](Shape& s)
+        {
+            if (s.isStatic || s.isDragging)
+                return;
+
+            const float linearThreshold2 = 0.0025f;   // 0.05²
+            const float angularThreshold2 = 0.0025f;
+
+            if (glm::length2(s.vel) < linearThreshold2 &&
+                glm::length2(s.angularVel) < angularThreshold2 &&
+                s.isGrounded)
+            {
+                s.sleepTimer += dt;
+
+                if (s.sleepTimer > 0.6f)
+                {
+                    s.isSleeping = true;
+                    s.vel = glm::vec3(0.0f);
+                    s.angularVel = glm::vec3(0.0f);
+                }
+            }
+            else
+            {
+                s.sleepTimer = 0.0f;
+                s.isSleeping = false;
+            }
+        };
+    for (auto& s : pyramids) sleepSystem(s);
+    for (auto& s : rects)    sleepSystem(s);
+    for (auto& s : spheres)  sleepSystem(s);
 }
-
-
 void drawScene(
     const Scene& scene,
     unsigned int shaderProgram,

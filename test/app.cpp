@@ -19,6 +19,11 @@
 #include "scene.h"
 
 
+// ------------------------------------------------------------
+// Lista global de shapes para consultas de grounded/suporte
+// ------------------------------------------------------------
+std::vector<Shape*> gShapes;
+
 // - centralizar init loop shutdown do monolito.
 // - guarda ponteiro pra  ela mesma  na janelinha do GLFW  com o user pointer procallback do cursor
 //   fazer a camera rodar.
@@ -74,7 +79,6 @@ bool App::init() {
     // renderer init ( shaders and VAOs / sphere buffers)
     _renderer.init();
 
-    // sample scene setup
     _scene.pyramidsRef().clear();
     _scene.rectsRef().clear();
     _scene.spheresRef().clear();
@@ -82,52 +86,34 @@ bool App::init() {
     Shape pyramid;
     pyramid.type = ShapeType::Pyramid;
     pyramid.id = (int)_scene.pyramidsRef().size();
-    pyramid.pos = glm::vec3(-3.0f, 1.0f, 0.0f);
     pyramid.scale = glm::vec3(1.0f);
+    pyramid.pos = glm::vec3(-3.0, 0.51, 0.0f);
     pyramid.mass = 1.0f;
-    pyramid.invMass = 1.0f / pyramid.mass;
-
-    float a = pyramid.scale.x;
-    float h = pyramid.scale.y;
-    float I = (pyramid.mass / 20.0f) * (a * a + h * h);
-    pyramid.inertia = I;
-    pyramid.invInertia = 1.0f / I;
+    pyramid.inertia = computeLocalInertiaTensor(pyramid);
+    pyramid.invInertia = glm::inverse(pyramid.inertia);
     _scene.pyramidsRef().push_back(pyramid);
 
     Shape rect;
     rect.type = ShapeType::Rect;
     rect.id = (int)_scene.rectsRef().size();
-    rect.pos = glm::vec3(0.0f, 1.0f, 0.0f);
+    rect.pos = glm::vec3(0.0f, 3.0f, 0.0f);
     rect.scale = glm::vec3(2.0f, 1.0f, 1.0f);
     rect.mass = 3.0f;
-    rect.invMass = 1.0f / rect.mass;
-    glm::vec3 s = rect.scale;
-    float H = (1.0f / 12.0f) * rect.mass * (s.y * s.y + s.z * s.z);
-    rect.inertia = H;
-    rect.invInertia = 1.0f / H;
+    rect.inertia = computeLocalInertiaTensor(rect);
+    rect.invInertia = glm::inverse(rect.inertia);
     _scene.rectsRef().push_back(rect);
-
 
     Shape sphere;
     sphere.type = ShapeType::Sphere;
     sphere.id = (int)_scene.spheresRef().size();
-    sphere.pos = glm::vec3(3.0f, 8.0f, 0.0f);
     sphere.scale = glm::vec3(1.0f);
+    sphere.pos = glm::vec3(3.0, 4.0, 0.0f);
     sphere.mass = 2.0f;
-    sphere.invMass = 1.0f / sphere.mass;
-    float r = sphere.scale.x * 0.5f;
-    float L = (2.0f / 5.0f) * sphere.mass * r * r;
-    sphere.inertia = L;
-    sphere.invInertia = 1.0f / L;
+    sphere.inertia = computeLocalInertiaTensor(sphere);
+    sphere.invInertia = glm::inverse(sphere.inertia);
     _scene.spheresRef().push_back(sphere);
 
-    _lastFrame = (float)glfwGetTime();
-    _camera.pos = glm::vec3(0.0f, 5.0f, 15.0f);
-    _camera.front = glm::vec3(0.0f, -0.2f, -1.0f);
-    _camera.up = glm::vec3(0.0f, 1.0f, 0.0f);
-    _camera.yaw = -90.0f;
-    _camera.pitch = 0.0f;
-
+    
     return true;
 }
 
@@ -191,8 +177,8 @@ void App::frame() {
         };
 
     // crosshair
-
-    if (!rightNow && _rightPrev) {
+    /*
+    * if (!rightNow && _rightPrev) {
         if (_scene.selectionRef().type != ShapeType::None && _havePrevTarget) {
             Shape* s = getShapePtrFromScene(_scene.selectionRef());
             if (s) {
@@ -217,6 +203,8 @@ void App::frame() {
         _scene.selectionRef() = Selection{};
     }
 
+    */
+    
     // helper  return a pointer into the scene storage for a select
    
     if (_dragging && _scene.selectionRef().type != ShapeType::None) {
@@ -265,14 +253,21 @@ void App::frame() {
                 float vmax = 50.0f;
                 if (glm::length(throwVel) > vmax) throwVel = glm::normalize(throwVel) * vmax;
                 s->vel = throwVel;
+                s->angularVel = glm::vec3(0.0f);
+                s->isDragging = false;
+                s->isSleeping = false;
+                s->sleepTimer = 0.0f;
             }
         }
         _dragging = false;
     }
     _rightPrev = rightNow;
 
+
     // physics 
     updatePhysics(_scene, _deltaTime);
+
+
 
     // render
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
