@@ -104,7 +104,7 @@ void updatePhysics(float dt)
             if (s.isStatic || s.isDragging || s.isSleeping)
                 return;
 
-            // NÃO aplicar gravidade se já está apoiado e quase parado
+            // NÃO aplicar gravidade se j est apoiado e quase parado
             if (s.useGravity && !(s.isGrounded && glm::length2(s.vel) < 0.01f))
                 s.vel += gravity * dt;
 
@@ -145,7 +145,7 @@ void updatePhysics(float dt)
                 if (s.vel.y < 0.0f)
                     s.vel.y = 0.0f;
 
-                // Fricção forte se já quase parado
+                // Fricção forte se j quase parado
                 if (std::abs(s.vel.x) < 0.05f) s.vel.x = 0.0f;
                 if (std::abs(s.vel.z) < 0.05f) s.vel.z = 0.0f;
 

@@ -107,6 +107,7 @@ bool App::init() {
     sphere.type = ShapeType::Sphere;
     sphere.id = (int)_scene.spheresRef().size();
     sphere.scale = glm::vec3(1.0f);
+    sphere.radius = 1.0f;
     sphere.pos = glm::vec3(3.0, 4.0, 0.0f);
     sphere.mass = 2.0f;
     sphere.inertia = computeLocalInertiaTensor(sphere);

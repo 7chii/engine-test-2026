@@ -18,6 +18,8 @@ struct Shape {
     glm::quat lastGroundedRot = glm::quat(1, 0, 0, 0);
     float groundedStableTimer = 0.0f;
 
+    float radius = 0.0f;
+
     // transf
     glm::vec3 pos = glm::vec3(0.0f);
     glm::vec3 scale = glm::vec3(1.0f);
