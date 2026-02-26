@@ -97,14 +97,14 @@ void updatePhysics(float dt)
     const float timeToSleep = 0.8f;
 
     ////////////////////////////////////////////////////////////
-    // INTEGRAÇÃO
+    // INTEGRAaO
     ////////////////////////////////////////////////////////////
     auto integrate = [&](Shape& s)
         {
             if (s.isStatic || s.isDragging || s.isSleeping)
                 return;
 
-            // NÃO aplicar gravidade se j est apoiado e quase parado
+            // NAO aplicar gravidade se j est apoiado e quase parado
             if (s.useGravity && !(s.isGrounded && glm::length2(s.vel) < 0.01f))
                 s.vel += gravity * dt;
 
@@ -125,7 +125,7 @@ void updatePhysics(float dt)
             }
         };
     ////////////////////////////////////////////////////////////
-    // COLISÃO COM O CHÃO (y = 0)
+    // COLISAO COM O CHAO (y = 0)
     ////////////////////////////////////////////////////////////
     auto ground = [&](Shape& s)
         {
@@ -137,7 +137,7 @@ void updatePhysics(float dt)
 
             if (penetration > 0.0f)
             {
-                // Corrige posição
+                // Corrige posiao
                 s.pos.y = halfY;
                 s.isGrounded = true;
 
@@ -145,14 +145,14 @@ void updatePhysics(float dt)
                 if (s.vel.y < 0.0f)
                     s.vel.y = 0.0f;
 
-                // Fricção forte se j quase parado
+                // Fricao forte se j quase parado
                 if (std::abs(s.vel.x) < 0.05f) s.vel.x = 0.0f;
                 if (std::abs(s.vel.z) < 0.05f) s.vel.z = 0.0f;
 
                 s.vel.x *= 0.85f;
                 s.vel.z *= 0.85f;
 
-                // Mata micro rotação residual
+                // Mata micro rotaao residual
                 if (glm::length2(s.angularVel) < 0.0005f)
                     s.angularVel = glm::vec3(0.0f);
             }

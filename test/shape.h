@@ -1,49 +1,66 @@
 #pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include "geometry.h"
 
 enum class ShapeType {
     None,
     Pyramid,
     Rect,
-    Sphere
+    Sphere,
+    Capsule,
+    ConvexHull
 };
 
+
+
+
 struct Shape {
- 
+
     ShapeType type = ShapeType::None;
     int id = -1;
+    bool geometryDirty = true;
 
+   
+    GeometryData geometry;
+
+    int requestedVertexCount = 0;
+    int requestedFaceCount = 0;
+
+
+    std::array<glm::vec3, MAX_SHAPE_VERTS> worldVertices;
+    std::array<Face, MAX_SHAPE_FACES> worldFaces;
+
+
+    
     glm::vec3 lastGroundedPos = glm::vec3(0.0f);
     glm::quat lastGroundedRot = glm::quat(1, 0, 0, 0);
     float groundedStableTimer = 0.0f;
 
-    float radius = 0.0f;
+    float radius = 0.0f;      // sphere/capsule
+    float halfHeight = 0.0f;  // capsule
 
     // transf
     glm::vec3 pos = glm::vec3(0.0f);
     glm::vec3 scale = glm::vec3(1.0f);
-    glm::quat rot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);//rotacao
+    glm::quat rot = glm::quat(1, 0, 0, 0);
 
     // mov lin
     glm::vec3 vel = glm::vec3(0.0f);
     float mass = 1.0f;
-    float invMass = 1.0f; //cache pra massa
+    float invMass = 1.0f;
 
     // mov rot
     glm::vec3 angularVel = glm::vec3(0.0f);
-    glm::mat3 inertia = glm::mat3(1.0f);     // Matriz de inércia local
+    glm::mat3 inertia = glm::mat3(1.0f);
     glm::mat3 invInertia = glm::mat3(1.0f);
 
-    // flag de state ( estabilidade)
-    bool isStatic = false;    // se true massa e iner sao  infinitas
-    bool isDragging = false;  // se true  a fisica ignora gravidade
+    bool isStatic = false;
+    bool isDragging = false;
 
-    // controle de gravidade
     bool useGravity = true;
     bool isGrounded = false;
 
-    // slee[p wake
     bool isSleeping = false;
     float sleepTimer = 0.0f;
 };
@@ -60,11 +77,6 @@ struct Contact {
     glm::vec3 point;
     glm::vec3 normal;
     float penetration;
-};
-
-struct PyramidFace {
-    glm::vec3 n;
-    float d; // plano: dot(n, x) + d = 0
 };
 
 

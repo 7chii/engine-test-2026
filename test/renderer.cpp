@@ -135,7 +135,7 @@ void main() {
     vec3 dy = dFdy(fs_in.worldPos);
     vec3 normal = normalize(cross(dx, dy));
     
-    // Shade baseado no ângulo entre normal e luz
+    // Shade baseado no angulo entre normal e luz
     float shade = dot(normal, lightDir);
     shade = clamp(shade, 0.3, 1.0);  // Keep minimum brightness
     

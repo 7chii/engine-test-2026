@@ -87,7 +87,7 @@ void drawConsole(Scene& scene) {
     ImGui::Text("Ex: add rect 0 1 0 -d 2 0.5 1 -p 3.5\nadd sphere 3 1 0 -p 2.0\nadd pyramid -3 1 0 -p 1.2");
     ImGui::End();
 
-	// add mira no centro da tela
+    // add mira no centro da tela
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImVec2 center = ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f);
     float len = 6.0f; float thick = 2.0f; ImU32 col = IM_COL32(255, 255, 255, 200);

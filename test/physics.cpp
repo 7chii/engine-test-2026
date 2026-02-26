@@ -18,15 +18,24 @@
 //----------------------------------------------------------
 
 static const glm::vec3 GRAVITY(0.0f, -9.81f, 0.0f);
+
 static const float restitutionGround = 0.2f;
 static const float frictionGround = 0.8f;
 static const float sleepTimeThreshold = 0.6f;
 
+static const float WAKE_SPEEDANGVEL = 0.000000001f;
 
+static const float WAKE_SPEEDVEL = 0.000000000001f;
+
+
+
+//adicionar motor de friccao que possa ser alterado conforme material  add material ao chao
+
+/*
 using BoxVerts = std::array<glm::vec3, 8>;
 using PyramidVerts = std::array<glm::vec3, 5>;
 using PyramidFaces = std::array<PyramidFace, 5>;
-
+*/
 //----------------------------------------------------------
 // BROADPHASE - AABB
 //----------------------------------------------------------
@@ -37,9 +46,6 @@ struct AABB
     glm::vec3 max;
 };
 
-//----------------------------------------------------------
-// INÉRCIA
-//----------------------------------------------------------
 
 template<size_t N>
 static void projectPoints(const std::array<glm::vec3, N>& pts,
@@ -57,70 +63,80 @@ static void projectPoints(const std::array<glm::vec3, N>& pts,
         outMax = std::max(outMax, proj);
     }
 }
-// Retorna vértices em world space de uma box (ShapeType::Rect)
-static void getBoxVertices(const Shape& box, BoxVerts& verts)
+static bool isEffectivelyStable(const Shape& s)
 {
-    glm::mat3 R = glm::mat3_cast(box.rot);
-    glm::vec3 he = box.scale * 0.5f;
+    //printf("-- shape : %d , stabletimer : %lf --",s.id, s.groundedStableTimer);
+
+    if (s.isStatic) return true;
+    if (s.isSleeping) return true;
+    
+    //if (s.vel.value < 0.01f && !s.isSleeping) return true;
+    //if (s.isGrounded) return true;
+    // pequenas folgas: se j começou a estabilizar (groundedStableTimer) ou est quase dormindo
+    if (s.groundedStableTimer > 0.5f) return true;
+    if (s.sleepTimer > 0.3f) return true;
+    return false;
+}
+
+// Retorna vertices em world space de uma box (ShapeType::Rect)
+static void computeBoxVertices(Shape& s)
+{
+    glm::mat3 R = glm::mat3_cast(s.rot);
+    glm::vec3 he = s.scale * 0.5f;
+    s.geometry.vertexCount = 8; // box
 
     int i = 0;
+
     for (int x = -1; x <= 1; x += 2)
         for (int y = -1; y <= 1; y += 2)
             for (int z = -1; z <= 1; z += 2)
-                verts[i++] = box.pos + R * glm::vec3(x * he.x, y * he.y, z * he.z);
+                s.geometry.vertices[i++] =
+                s.pos + R * glm::vec3(x * he.x, y * he.y, z * he.z);
 }
-// Retorna vértices em world space da pirâmide
+// Retorna vertices em world space da piramide
 
-static void getPyramidVertices(const Shape& p, PyramidVerts& verts)
+// Retorna vertices em world space da piramide
+static void computePyramidVertices(Shape& p)
 {
+    // Segurança (estilo console determinístico)
+    if (p.geometry.vertexCount < 5)
+        return;
+
     glm::mat3 R = glm::mat3_cast(p.rot);
+    p.geometry.vertexCount = 5;
+    p.geometry.faceCount = 5;
 
-    float hx = p.scale.x * 0.5f;
-    float hy = p.scale.y * 0.5f;
-    float hz = p.scale.z * 0.5f;
+    const float hx = p.scale.x * 0.5f;
+    const float hy = p.scale.y * 0.5f;
+    const float hz = p.scale.z * 0.5f;
 
-    // Base em -hy
-    verts[0] = p.pos + R * glm::vec3(-hx, -hy, -hz);
-    verts[1] = p.pos + R * glm::vec3(hx, -hy, -hz);
-    verts[2] = p.pos + R * glm::vec3(hx, -hy, hz);
-    verts[3] = p.pos + R * glm::vec3(-hx, -hy, hz);
+    // Base (y = -hy)
+    p.geometry.vertices[0] = p.pos + R * glm::vec3(-hx, -hy, -hz);
+    p.geometry.vertices[1] = p.pos + R * glm::vec3(hx, -hy, -hz);
+    p.geometry.vertices[2] = p.pos + R * glm::vec3(hx, -hy, hz);
+    p.geometry.vertices[3] = p.pos + R * glm::vec3(-hx, -hy, hz);
 
-    // Apex em +hy
-    verts[4] = p.pos + R * glm::vec3(0, hy, 0);
+    // Apex (y = +hy)
+    p.geometry.vertices[4] = p.pos + R * glm::vec3(0.0f, hy, 0.0f);
 }
-
 static AABB computeAABB(const Shape& s)
 {
     if (s.type == ShapeType::Sphere)
     {
-        float r = s.scale.x * s.radius; // substitui sphereRadius
+        float r = s.scale.x * s.radius;
         return { s.pos - glm::vec3(r), s.pos + glm::vec3(r) };
     }
 
     glm::vec3 minV(FLT_MAX);
     glm::vec3 maxV(-FLT_MAX);
 
-    if (s.type == ShapeType::Rect)
+    // Usa vertices persistentes
+    for (int i = 0; i < s.geometry.vertexCount; ++i)
     {
-        BoxVerts verts;
-        getBoxVertices(s, verts);
+        const glm::vec3& v = s.geometry.vertices[i];
 
-        for (const auto& v : verts)
-        {
-            minV = glm::min(minV, v);
-            maxV = glm::max(maxV, v);
-        }
-    }
-    else if (s.type == ShapeType::Pyramid)
-    {
-        std::array<glm::vec3, 5> verts;
-        getPyramidVertices(s, verts);
-
-        for (const auto& v : verts)
-        {
-            minV = glm::min(minV, v);
-            maxV = glm::max(maxV, v);
-        }
+        minV = glm::min(minV, v);
+        maxV = glm::max(maxV, v);
     }
 
     return { minV, maxV };
@@ -133,49 +149,57 @@ static bool aabbOverlap(const AABB& a, const AABB& b)
     if (a.max.z < b.min.z || a.min.z > b.max.z) return false;
     return true;
 }
-
-static void getPyramidFaces(const Shape& p, PyramidFaces& faces)
+static void computePyramidFaces(Shape& p)
 {
-    glm::mat3 R = glm::mat3_cast(p.rot);
-    glm::vec3 he = p.scale * 0.5f;
+    if (p.geometry.vertexCount < 5)
+        return;
 
-    // Base (4 vértices)
-    std::array<glm::vec3, 4> base = {
-        p.pos + R * glm::vec3(-he.x, -he.y, -he.z),
-        p.pos + R * glm::vec3(he.x, -he.y, -he.z),
-        p.pos + R * glm::vec3(he.x, -he.y,  he.z),
-        p.pos + R * glm::vec3(-he.x, -he.y,  he.z)
-    };
+    auto& faces = p.geometry.faces;
+    p.geometry.faceCount = 5;
 
-    glm::vec3 apex = p.pos + R * glm::vec3(0, he.y, 0);
+    const auto& v = p.geometry.vertices;
 
-    // 4 faces laterais
+    // 4 laterais
     for (int i = 0; i < 4; ++i)
     {
-        glm::vec3 a = base[i];
-        glm::vec3 b = base[(i + 1) % 4];
-        glm::vec3 c = apex;
+        const glm::vec3& a = v[i];
+        const glm::vec3& b = v[(i + 1) % 4];
+        const glm::vec3& c = v[4];
 
         glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
 
-        // Garante que a normal aponta para fora
         if (glm::dot(n, p.pos - a) > 0.0f)
             n = -n;
 
-        float d = -glm::dot(n, a);
-
-        faces[i] = { n, d };
+        faces[i].n = n;
+        faces[i].d = -glm::dot(n, a);
     }
 
-    // Face da base (índice 4)
-    glm::vec3 nBase = glm::normalize(R * glm::vec3(0, -1, 0));
-    float dBase = -glm::dot(nBase, base[0]);
-
-    faces[4] = { nBase, dBase };
+    // base
+    glm::vec3 nBase = glm::normalize(glm::cross(v[1] - v[0], v[3] - v[0]));
+    faces[4].n = nBase;
+    faces[4].d = -glm::dot(nBase, v[0]);
 }
 
+static void updateShapeWorldGeometry(Shape& s)
+{
+    switch (s.type)
+    {
+    case ShapeType::Rect:
+        computeBoxVertices(s);
+        break;
 
-// Calcula a matriz de inércia local baseada no tipo e escala do objeto.
+    case ShapeType::Pyramid:
+        computePyramidVertices(s);
+        computePyramidFaces(s);
+        break;
+
+    default:
+        break;
+    }
+}
+
+// Calcula a matriz de inercia local baseada no tipo e escala do objeto.
 glm::mat3 computeLocalInertiaTensor(const Shape& s)
 {
     float m = s.mass;
@@ -204,13 +228,13 @@ glm::mat3 computeLocalInertiaTensor(const Shape& s)
         return glm::mat3(i);
     }
 
-    // Para pirâmide (base quadruada), aproxime como caixa (ajuste se necessrio)
+    // Para piramide (base quadruada), aproxime como caixa (ajuste se necessrio)
     if (s.type == ShapeType::Pyramid)
     {
         float x2 = size.x * size.x;
         float y2 = size.y * size.y;
         float z2 = size.z * size.z;
-        float Ixx = (3.0f / 20.0f) * m * (y2 + z2); // aproximação
+        float Ixx = (3.0f / 20.0f) * m * (y2 + z2); // aproximaao
         float Iyy = (3.0f / 20.0f) * m * (x2 + z2);
         float Izz = (3.0f / 20.0f) * m * (x2 + y2);
         return glm::mat3(
@@ -223,10 +247,10 @@ glm::mat3 computeLocalInertiaTensor(const Shape& s)
     return glm::mat3(1.0f);
 }
 
-// Calcula matriz de inércia inversa no sistema de mundo
+// Calcula matriz de inercia inversa no sistema de mundo
 static glm::mat3 computeWorldInvInertia(const Shape& s)
 {
-    if (s.isStatic || s.isDragging)
+    if (s.isStatic || s.isDragging )
         return glm::mat3(0.0f);
 
     glm::mat3 R = glm::mat3_cast(s.rot);
@@ -234,7 +258,7 @@ static glm::mat3 computeWorldInvInertia(const Shape& s)
 }
 
 //----------------------------------------------------------
-// SLEEP THRESHOLDS dinâmicos
+// SLEEP THRESHOLDS dinamicos
 //----------------------------------------------------------
 static float computeSleepLinearThreshold(const Shape& s) {
     // Linear: proporcional ao maior eixo
@@ -242,19 +266,25 @@ static float computeSleepLinearThreshold(const Shape& s) {
     return std::max(0.01f, std::min(0.2f, 0.05f * maxScale));
 }
 static float computeSleepAngularThreshold(const Shape& s) {
-    // Angular: menos sensível ao tamanho, pode ser constante ou levemente dependente do scale
+    // Angular: menos sensivel ao tamanho, pode ser constante ou levemente dependente do scale
     float maxScale = std::max({ s.scale.x, s.scale.y, s.scale.z });
     return std::max(0.001f, 0.01f * maxScale);
 }
 
 //----------------------------------------------------------
-// Funções utilitrias
+// Funcoes utilitrias
 //----------------------------------------------------------
 
 inline void wake(Shape& s) {
-    if (s.isStatic) return;
+   // if (s.isStatic) return;
     s.isSleeping = false;
     s.sleepTimer = 0.0f;
+    //s.groundedStableTimer = 0.0f;
+}
+
+
+static void wakeIfThresholdPassed(Shape& s) {
+    wake(s);
 }
 
 static float sphereRadius(const Shape& s) {
@@ -288,64 +318,112 @@ static glm::vec3 getLowestPointOnBox(const Shape& s) {
 
 static void getPyramidContactPoints(const Shape& s, std::vector<glm::vec3>& out) {
     //std::vector<glm::vec3> verts;
-    PyramidVerts verts;
-    getPyramidVertices(s, verts);
-
     out.clear();
-    for (auto& v : verts)
+    for (int i = 0; i < s.geometry.vertexCount; ++i)
+    {
+        const glm::vec3& v = s.geometry.vertices[i];
+
         if (v.y <= 0.002f)
             out.push_back(v);
+    }
 }
 
 //----------------------------------------------------------
-// INTEGRAÇÃO
+// INTEGRACAO
 //----------------------------------------------------------
-static void integrateVelocity(Shape& s, float dt) {
-    if (s.isStatic || s.isDragging || s.isSleeping) return;
+static void integrateGravity(Shape& s, float dt)
+{
+    //s.isStatic  ||
+    //wake(s);
+    
+        
+        constexpr float ANGULAR_EPS2 = 1e-8f;
+        //float angVel2 = glm::length2(s.angularVel);
 
-    if (s.useGravity)
-        s.vel += GRAVITY * dt;
+        if (s.useGravity) {
 
-    s.vel *= std::exp(-0.05f * dt);
-    s.angularVel *= (1.0f - 0.15f * dt);
+            s.vel += GRAVITY * dt;
+        }
+
+
+        s.vel *= std::exp(-0.05f * dt);
+
+        // -------------------------------------------------
+        // DAMPING ANGULAR
+        // -------------------------------------------------
+        s.angularVel *= (1.0f - 0.15f * dt);
+    
+
 }
 
-static void integratePosition(Shape& s, float dt) {
-    if (s.isStatic || s.isDragging || s.isSleeping) return;
+static void integratePosition(Shape& s, float dt)
+{
+    //s.isStatic || s.isDragging ||
+    //if ( s.isDragging )
+      //  return;
+
+    constexpr float LIN_EPS2 = 0.0f;
+    constexpr float ANG_EPS2 = 1e-8f;
+
+    float vel2 = glm::length2(s.vel);
+    float ang2 = glm::length2(s.angularVel);
+
+
+    // -------------------------------------------------
+    // Integra posição
+    // -------------------------------------------------
     s.pos += s.vel * dt;
-}
 
+
+    s.geometryDirty = true;
+
+}
 static void integrateRotation(Shape& s, float dt)
 {
-    if (s.isStatic || s.isDragging || s.isSleeping) return;
+    //s.isStatic || s.isDragging ||
+    if (s.isDragging )
+        return;
 
-    glm::mat3 invInertiaWorld = computeWorldInvInertia(s);
+    constexpr float ANGULAR_EPS2 = 1e-8f;
 
     float w2 = glm::length2(s.angularVel);
-    constexpr float ANGULAR_EPS2 = 1e-8f;
-    if (w2 < ANGULAR_EPS2) {
+
+    // Se quase parado → zera ruído
+    if (w2 < ANGULAR_EPS2)
+    {
         s.angularVel = glm::vec3(0.0f);
         return;
     }
 
+    // -------------------------------------------------
+    // Integra rotação
+    // -------------------------------------------------
     float w = std::sqrt(w2);
     glm::vec3 axis = s.angularVel / w;
 
-    s.rot = glm::normalize(
-        glm::angleAxis(w * dt, axis) * s.rot
-    );
-}
+    glm::quat dq = glm::angleAxis(w * dt, axis);
 
+    s.rot = glm::normalize(dq * s.rot);
+
+    // marcou que mudou geometria
+    s.geometryDirty = true;
+}
+/*
+const float WAKE_SPEED2 = 0.0025f; // ~5cm/s
+    if (glm::length2(s.vel) > WAKE_SPEED2 ||
+        glm::length2(s.angularVel) > WAKE_SPEED2)
+    {
+        wake(s);
+    }*/
 //----------------------------------------------------------
-// APLICAÇÃO DE IMPULSO
+// 
+// 
+// APLICACAO TODO IMPULSO
 //----------------------------------------------------------
 static void applyImpulse(Shape& s, const glm::vec3& J, const glm::vec3& cp) {
-    if (s.isSleeping) {
-        if (glm::length2(J) < 1e-6f)
-            return; // ignora impulso minúsculo
-        wake(s);
-    }
-
+    wake(s);
+    s.groundedStableTimer = 0.0f;
+    //s.sleepTimer = 0.0f;
     s.vel += J * getInvMass(s);
 
     glm::vec3 r = cp - s.pos;
@@ -356,33 +434,40 @@ static void applyImpulse(Shape& s, const glm::vec3& J, const glm::vec3& cp) {
 }
 
 //----------------------------------------------------------
-// CONTATO COM O CHÃO
+// CONTATO C CHAO
 //----------------------------------------------------------
 static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
 {
-    if (s.isStatic) return;
-
+    //if (s.isStatic ) return;
+    //printf(" >> <<")h
     glm::vec3 n(0, 1, 0);
     float penetration = -cp.y;
 
+    if (glm::length2(s.vel) > WAKE_SPEEDVEL ||
+        glm::length2(s.angularVel) > WAKE_SPEEDANGVEL)
+    {
+        wake(s);
+    }
+
+
     // -------------------------------------------------
-    // 1. Sem penetração → nada a fazer
+    //  Sem penetracao  ignora
     // -------------------------------------------------
     if (penetration <= 0.0f)
         return;
 
     // -------------------------------------------------
-    // 2. NÃO acordar por ruído microscópico
+    //  NAO acordar por ruido
     // -------------------------------------------------
-    const float WAKE_SPEED2 = 0.0025f; // ~5cm/s
-    if (glm::length2(s.vel) > WAKE_SPEED2 ||
-        glm::length2(s.angularVel) > WAKE_SPEED2)
+    //const float WAKE_SPEED2 = 0.0025f; // 5cm/s
+    if (isEffectivelyStable(s))
     {
+        //printf(" -- l 460 wake -- ");
         wake(s);
     }
 
     // -------------------------------------------------
-    // 3. Correção posicional (Baumgarte estvel)
+    // Correcao posicional (Baumgarte estavel)
     // -------------------------------------------------
     const float slop = 0.001f;
     const float percent = 0.6f;
@@ -393,6 +478,10 @@ static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
             std::max(penetration - slop, 0.0f) * percent);
 
     s.pos.y += correction;
+    /*
+    glm::vec3 cpUpdated = glm::vec3(s.pos.x, 0.0f, s.pos.z);
+    glm::vec3 r = cpUpdated - s.pos;
+   */
 
     // -------------------------------------------------
     // 4. Velocidade no ponto de contato
@@ -400,18 +489,23 @@ static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
     glm::vec3 r = cp - s.pos;
     glm::vec3 vcp = s.vel + glm::cross(s.angularVel, r);
     float vn = glm::dot(vcp, n);
-
-    // Se j est se afastando ou quase parado → não resolver
+    /*
+    if (s.isGrounded && std::abs(vn) < 0.01f)
+    {
+        printf(" shape : %d | grounded abs < 0.01f", s.type);
+        s.vel.y = 0.0f;
+        
+        return;
+    }
+    */
+    // Se j est se afastando ou quase parado → nAo resolver
     if (vn >= -1e-4f)
         return;
 
     float invM = getInvMass(s);
     glm::mat3 invInertiaWorld = computeWorldInvInertia(s);
 
-    float denom =
-        invM +
-        glm::dot(invInertiaWorld * glm::cross(r, n),
-            glm::cross(r, n));
+    float denom = invM + glm::dot(invInertiaWorld * glm::cross(r, n), glm::cross(r, n));
 
     if (denom < 1e-8f)
         return;
@@ -423,10 +517,12 @@ static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
 
     // Ignora impulso microscópico
     if (std::abs(jn) > 1e-6f)
+    {
+        //printf(" shape id: %d -> abs jn: %lf\n", s.id, jn);
         applyImpulse(s, jn * n, cp);
-
+    }
     // -------------------------------------------------
-    // 6. Fricção Coulomb correta
+    // 6. Fricao Coulomb correta
     // -------------------------------------------------
     vcp = s.vel + glm::cross(s.angularVel, r);
     glm::vec3 vt = vcp - glm::dot(vcp, n) * n;
@@ -444,12 +540,14 @@ static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
         if (denomT > 1e-8f)
         {
             float jt = -glm::dot(vcp, t) / denomT;
-
             float maxFriction = frictionGround * std::abs(jn);
             jt = glm::clamp(jt, -maxFriction, maxFriction);
 
-            if (std::abs(jt) > 1e-6f)
+            if (std::abs(jt) > 1e-6f) {
+                //printf(" shape id: %d -> jt val: %lf", s.id, jt);
                 applyImpulse(s, jt * t, cp);
+               
+            }
         }
     }
 
@@ -459,8 +557,11 @@ static void solveGroundContact(Shape& s, const glm::vec3& cp, float dt)
     const float linearDamping = 0.98f;
     const float angularDamping = 0.98f;
 
+    s.geometryDirty = true;
+
     s.vel *= linearDamping;
     s.angularVel *= angularDamping;
+    
 }
 static bool isCOMInsideBoxTopFace(const Shape& box, const Shape& obj)
 {
@@ -471,7 +572,7 @@ static bool isCOMInsideBoxTopFace(const Shape& box, const Shape& obj)
 
     glm::vec3 half = box.scale * 0.5f;
 
-    // testa projeção em X e Z da face superior
+    // testa projeao em X e Z da face superior
     return std::abs(local.x) <= half.x &&
         std::abs(local.z) <= half.z;
 }
@@ -485,17 +586,25 @@ inline float quatAngularDistance(const glm::quat& q1, const glm::quat& q2) {
 
 // escolhe a face da pirâmide que melhor corresponde à normal de contato (maior dot)
 // retorna true se encontrou e preenche centroid e faceNormal (ambos em world)
-static bool findPyramidContactFaceCentroid(const Shape& pyr, const glm::vec3& contactNormal, glm::vec3& outCentroid, glm::vec3& outFaceNormal)
+static bool findPyramidContactFaceCentroid(
+    const Shape& pyr,
+    const glm::vec3& contactNormal,
+    glm::vec3& outCentroid,
+    glm::vec3& outFaceNormal)
 {
-    //std::vector<glm::vec3> verts;
-    PyramidVerts verts;
-    getPyramidVertices(pyr, verts);
-    if (verts.size() < 5) return false;
+    const auto& verts = pyr.geometry.vertices;
 
-    // triângulos que compõem faces (base como 2 triângulos + 4 lados)
+    // esperamos 5 vértices: 0-3 base, 4 apex
+    if (verts.size() < 5)
+        return false;
+
+    // faces triangulares:
+    // base = 2 triângulos
+    // 4 faces laterais
     struct Tri { int a, b, c; };
+
     Tri faces[6] = {
-        {0,1,2}, {0,2,3}, // base (dois triângulos)
+        {0,1,2}, {0,2,3}, // base
         {0,1,4},
         {1,2,4},
         {2,3,4},
@@ -504,71 +613,84 @@ static bool findPyramidContactFaceCentroid(const Shape& pyr, const glm::vec3& co
 
     float bestDot = -FLT_MAX;
     int bestIdx = -1;
-    glm::vec3 bestN(0.0f);
+    glm::vec3 bestNormal(0.0f);
 
-    // contactNormal aponta de suporte -> objeto (por convenção do seu solver).
-    // a face correta da pirâmide ter a normal apontando aproximadamente na direção OPOSTA de contactNormal
+    // contactNormal aponta de suporte -> objeto
+    // queremos a face cuja normal aponte aproximadamente contra contactNormal
     glm::vec3 wanted = -glm::normalize(contactNormal);
 
     for (int i = 0; i < 6; ++i)
     {
-        glm::vec3 v0 = verts[faces[i].a];
-        glm::vec3 v1 = verts[faces[i].b];
-        glm::vec3 v2 = verts[faces[i].c];
+        const glm::vec3& v0 = verts[faces[i].a];
+        const glm::vec3& v1 = verts[faces[i].b];
+        const glm::vec3& v2 = verts[faces[i].c];
 
-        glm::vec3 n = glm::normalize(glm::cross(v1 - v0, v2 - v0));
-        // orienta a normal para fora (consistência com getPyramidFaces)
-        if (glm::dot(n, pyr.pos - v0) > 0.0f) n = -n;
+        glm::vec3 n = glm::cross(v1 - v0, v2 - v0);
+        float len2 = glm::length2(n);
+        if (len2 < 1e-8f)
+            continue;
 
-        float d = glm::dot(n, wanted); // quanto a normal da face aponta para 'wanted' (-contactNormal)
-        if (d > bestDot) {
+        n = glm::normalize(n);
+
+        // garantir normal apontando para fora
+        // usamos centro da pirâmide como referência
+        if (glm::dot(n, pyr.pos - v0) > 0.0f)
+            n = -n;
+
+        float d = glm::dot(n, wanted);
+
+        if (d > bestDot)
+        {
             bestDot = d;
             bestIdx = i;
-            bestN = n;
+            bestNormal = n;
         }
     }
 
-    if (bestIdx == -1) return false;
+    if (bestIdx == -1)
+        return false;
 
-    // centróide do triângulo selecionado
-    glm::vec3 v0 = verts[faces[bestIdx].a];
-    glm::vec3 v1 = verts[faces[bestIdx].b];
-    glm::vec3 v2 = verts[faces[bestIdx].c];
+    const glm::vec3& v0 = verts[faces[bestIdx].a];
+    const glm::vec3& v1 = verts[faces[bestIdx].b];
+    const glm::vec3& v2 = verts[faces[bestIdx].c];
+
     outCentroid = (v0 + v1 + v2) / 3.0f;
-    outFaceNormal = bestN;
+    outFaceNormal = bestNormal;
+
     return true;
 }
-
-static void handleGroundContact(Shape& s, float dt) {
+static void handleGroundContact(Shape& s, float dt)
+{
     bool wasGrounded = s.isGrounded;
 
-    const float groundEps = 0.01f;
+    // Garantir world geometry atualizada
+    if (s.geometryDirty)
+    {
+        updateShapeWorldGeometry(s);
+        s.geometryDirty = false;
+    }
 
     const float stableTimeRequired = 0.5f;
-    const float posEps = 0.01f;      // 1 centímetro para posição
-    const float rotEps = 0.0175f;    // 1 grau para rotação
-
-    
+    const float posEps = 0.1f;      // 1 centímetro para posição
+    const float rotEps = 0.0175f;
     const float GROUND_KEEP = 0.03f;   // 3 cm tolerância para manter
     const float GROUND_GAIN = 0.01f;
-    float minY = FLT_MAX;
-    glm::vec3 support;
 
-    BoxVerts boxVerts;
-    PyramidVerts pyrVerts;
+    float minY = FLT_MAX;
+    glm::vec3 support(0.0f);
+
     if (s.type == ShapeType::Sphere)
     {
         float r = s.scale.x * s.radius;
         minY = s.pos.y - r;
         support = glm::vec3(s.pos.x, minY, s.pos.z);
     }
-    else if (s.type == ShapeType::Rect)
+    else if (s.geometry.vertexCount > 0)
     {
-        BoxVerts verts;
-        getBoxVertices(s, verts);
-
-        for (const auto& v : verts)
+        for (int i = 0; i < s.geometry.vertexCount; ++i)
         {
+            const glm::vec3& v = s.geometry.vertices[i];
+
             if (v.y < minY)
             {
                 minY = v.y;
@@ -576,107 +698,103 @@ static void handleGroundContact(Shape& s, float dt) {
             }
         }
     }
-    else if (s.type == ShapeType::Pyramid)
-    {
-        PyramidVerts verts;
-        getPyramidVertices(s, verts);
-
-        for (const auto& v : verts)
-        {
-            if (v.y < minY)
-            {
-                minY = v.y;
-                support = v;
-            }
-        }
-    }
-
     float threshold = wasGrounded ? GROUND_KEEP : GROUND_GAIN;
     bool touching = (minY <= threshold);
-    /*
-    if (s.type == ShapeType::Pyramid)
-    {
-        glm::vec3 faceCentroid, faceNormal;
-
-        if (findPyramidContactFaceCentroid(s, glm::vec3(0, 1, 0), faceCentroid, faceNormal))
-        {
-            float dist = faceCentroid.y;
-            float threshold = wasGrounded ? 0.03f : 0.01f;
-            touching = (dist <= threshold);
-        }
-    }
-    */
 
     float posDiff = glm::length(s.pos - s.lastGroundedPos);
     float rotDiff = quatAngularDistance(s.lastGroundedRot, s.rot);
-
-    // Hysteresis: grounded se ficou estvel pelos thresholds, e só sai para bem além deles
-    if (posDiff < posEps && rotDiff < rotEps) {
+    bool abc = posDiff < posEps;
+    bool test = posDiff < posEps && rotDiff < rotEps;
+    printf(" abc -> (%d)  || ", abc);
+    printf(" (%d) ", test);
+    
+    if (test)
+    {
+        //testar se aumenta mesmo
         s.groundedStableTimer += dt;
     }
-    else if (posDiff > posEps * 3.0f || rotDiff > rotEps * 3.0f) {
+
+    else if (posDiff > posEps * 3.0f || rotDiff > rotEps * 3.0f)
+    {
+        //printf(" -- l 710 groundedStable Timer reset -- ");
+        //testar se zera mesmo com esse x3
         s.groundedStableTimer = 0.0f;
         s.lastGroundedPos = s.pos;
         s.lastGroundedRot = s.rot;
     }
-    // se no meio, mantém o valor, não zera nem incrementa
 
-    bool nearlyStable = s.groundedStableTimer > stableTimeRequired;
-
-    //bool slowNearGround = (minY < (groundEps)) && std::abs(s.vel.y) < 0.1f;
-
-    if (touching)
-    {
-        s.isGrounded = true;
-    }
-    else
-    {
-        // só perde grounded se realmente saiu do chão
-        if (minY > GROUND_KEEP) {
-            //printf(" ----retirado grounded ----- ");
-            s.isGrounded = false;
-    }
-    }
-
+    /*
     if (s.isGrounded)
     {
         glm::vec3 groundNormal(0, 1, 0);
-        glm::vec3 faceNormal = glm::normalize(glm::mat3_cast(s.rot)[1]);
+        glm::vec3 up = glm::normalize(glm::mat3_cast(s.rot)[1]);
 
-        float dotVal = glm::dot(faceNormal, groundNormal);
-
-        const float ALIGN_EPS = 0.995f; // ~5 graus
+		const float dotVal = glm::dot(up, groundNormal);
+        const float ALIGN_EPS = 0.995f;
 
         if (dotVal > ALIGN_EPS && !wasGrounded)
         {
-            // força alinhamento perfeito
             glm::vec3 right = glm::normalize(glm::mat3_cast(s.rot)[0]);
             glm::vec3 forward = glm::cross(groundNormal, right);
             right = glm::cross(forward, groundNormal);
 
-            glm::mat3 correctedBasis;
-            correctedBasis[0] = glm::normalize(right);
-            correctedBasis[1] = groundNormal;
-            correctedBasis[2] = glm::normalize(forward);
+            glm::mat3 basis;
+            basis[0] = glm::normalize(right);
+            basis[1] = groundNormal;
+            basis[2] = glm::normalize(forward);
 
-            s.rot = glm::quat_cast(correctedBasis);
-
+            s.rot = glm::quat_cast(basis);
+            s.vel = glm::vec3(0.0f);
             s.angularVel = glm::vec3(0.0f);
         }
     }
-
-    if (touching)
-        solveGroundContact(s, support, dt);
+    */
+    
     /*
-    if (s.isGrounded && std::abs(s.vel.y) < 0.02f) {
-        s.vel.y = 0.0f;
-        if (glm::length2(s.vel) < 1e-6f)
-            s.vel = glm::vec3(0.0f);
-        s.angularVel = glm::vec3(0.0f);
+    
+    if (touching)
+    {
+        s.isGrounded = true;
+        
+        if (isEffectivelyStable(s)) {
+            s.isSleeping = true;
+            
+        }
+    }
+    else 
+    {
+        s.groundedStableTimer = 0.0f;
+        if (minY > GROUND_KEEP) {
+            
+            s.isGrounded = false;
+            s.isStatic = false;
+            s.isSleeping = false;
+        }
     }
     */
-    if (!wasGrounded && s.isGrounded)
-        s.sleepTimer = 0.0f;
+    if (touching) {
+        //s.isGrounded = true;
+        //if (isEffectivelyStable(s)) {
+            //s.isSleeping = true;
+          //  s.groundedStableTimer += dt;
+            //return;
+        //}
+        
+        //s.groundedStableTimer = 0.0f;
+        solveGroundContact(s, support, dt);
+        
+
+    }
+    
+    else {
+        //printf(" -- l 778 groundedstabletimer reset -- ");
+        s.isGrounded = false;
+        s.groundedStableTimer = 0.0f;
+
+    }
+    
+
+        
 }
 
 static bool isPointInsideBoxTopFace(const Shape& box, const glm::vec3& worldPoint)
@@ -685,27 +803,18 @@ static bool isPointInsideBoxTopFace(const Shape& box, const glm::vec3& worldPoin
     glm::vec3 local = glm::transpose(R) * (worldPoint - box.pos); // point em espaço local da box
     glm::vec3 half = box.scale * 0.5f;
 
-    // checa projeção X/Z dentro dos half-extents da face superior
-    // não exigimos que y esteja exatamente no topo; apenas que projete sobre a rea da face 1e-6f
+    // checa projeao X/Z dentro dos half-extents da face superior
+    // nAo exigimos que y esteja exatamente no topo; apenas que projete sobre a rea da face 1e-6f
     return (std::abs(local.x) <= half.x + 1e-6f && std::abs(local.z) <= half.z);
 }
 
-static bool isEffectivelyStable(const Shape& s)
-{
-    if (s.isStatic) return true;
-    if (s.isSleeping) return true;
-    if (s.isGrounded) return true;
-    // pequenas folgas: se j começou a estabilizar (groundedStableTimer) ou est quase dormindo
-    if (s.groundedStableTimer > 0.1f) return true;
-    if (s.sleepTimer > 0.3f) return true;
-    return false;
-}
+
 
 inline bool guessNormalAndPoint(const glm::vec3& a, const glm::vec3& b,
     glm::vec3& outSupportNormal, glm::vec3& outContactPoint, const Shape& s)
 {
-    // heurística: um dos argumentos provavelmente é uma normal unitria (~1.0 length)
-    // e o outro é um ponto (distância razovel ao centro do shape).
+    // heuristica: um dos argumentos provavelmente e uma normal unitria (~1.0 length)
+    // e o outro e um ponto (distancia razovel ao centro do shape).
     float la = glm::length(a);
     float lb = glm::length(b);
 
@@ -747,7 +856,7 @@ inline void snapBoxToSurfaceA(Shape& s,
     if (glm::length2(supportNormal) < 1e-8f) return;
     supportNormal = glm::normalize(supportNormal);
 
-    // obtém normais das faces em world
+    // obtem normais das faces em world
     glm::mat3 R = glm::mat3_cast(s.rot);
     std::array<glm::vec3, 6> faceNormals = {
         R[0], -R[0],
@@ -771,13 +880,15 @@ inline void snapBoxToSurfaceA(Shape& s,
     const float MIN_ALIGN = 0.25f; // ajuste se quiser mais/menos permissivo
     if (bestIdx < 0 || bestDot < MIN_ALIGN) return;
 
-    // se j praticamente alinhado, apenas corrige penetrações
+    // se j praticamente alinhado, apenas corrige penetracoes
     glm::vec3 chosenFrom = glm::normalize(faceNormals[bestIdx]);
+    const auto& verts = s.geometry.vertices;
     if (bestDot > 0.9995f) {
-        // apenas empurra para evitar interpenetração com o plano definido por contactPoint+supportNormal
+        // apenas empurra para evitar interpenetraao com o plano definido por contactPoint+supportNormal
         //std::vector<glm::vec3> verts; 
-        BoxVerts verts;
-        getBoxVertices(s, verts);
+        //BoxVerts verts;
+        //getBoxVertices(s, verts);
+        
         float minDist = FLT_MAX;
         for (auto& v : verts) {
             float d = glm::dot(v - contactPoint, supportNormal);
@@ -787,19 +898,19 @@ inline void snapBoxToSurfaceA(Shape& s,
         return;
     }
 
-    // calcula rotação que leva a face escolhida -> supportNormal
+    // calcula rotaao que leva a face escolhida -> supportNormal
     glm::quat q = glm::rotation(chosenFrom, supportNormal);
     q = glm::normalize(q);
 
-    // rotaciona em torno do ponto de contato (mantém contato onde est)
+    // rotaciona em torno do ponto de contato (mantem contato onde est)
     glm::vec3 offset = contactPoint - s.pos;
     glm::vec3 rotatedOffset = glm::rotate(q, offset);
     s.pos = contactPoint - rotatedOffset;
+
     s.rot = glm::normalize(q * s.rot);
 
-    // corrige penetração pequena após rotação (garante que vértices não fiquem "dentro" do suporte)
-    BoxVerts verts; 
-    getBoxVertices(s, verts);
+    // corrige penetraao pequena após rotaao (garante que vertices nAo fiquem "dentro" do suporte)
+    
     float minDist = FLT_MAX;
     for (auto& v : verts) {
         float d = glm::dot(v - contactPoint, supportNormal);
@@ -807,6 +918,7 @@ inline void snapBoxToSurfaceA(Shape& s,
     }
     if (minDist < 0.0f)
         s.pos -= supportNormal * minDist;
+    s.geometryDirty = true;
 
     // amortecimento para evitar jitter
     s.angularVel *= 0.25f;
@@ -858,7 +970,7 @@ inline void snapBoxToSurface(Shape& s,
 
     s.pos = contactPoint - rotatedOffset;
     s.rot = glm::normalize(q * s.rot);
-
+    s.geometryDirty = true;
     s.angularVel *= 0.2f;
     s.vel *= 0.4f;
 }
@@ -868,8 +980,7 @@ inline void snapPyramidToSurface(Shape& s,
 {
     if (s.isStatic) return;
 
-    PyramidVerts verts;
-    getPyramidVertices(s, verts);
+    const auto& verts = s.geometry.vertices;
     if (verts.size() < 5) return;
 
     struct Tri { int a, b, c; };
@@ -918,6 +1029,7 @@ inline void snapPyramidToSurface(Shape& s,
 
     s.pos = contactPoint - rotatedOffset;
     s.rot = glm::normalize(q * s.rot);
+    s.geometryDirty = true;
 
     s.angularVel *= 0.2f;
     s.vel *= 0.4f;
@@ -941,14 +1053,13 @@ inline void snapPyramidToSurfaceA(Shape& s,
     supportNormal = glm::normalize(supportNormal);
 
     //--------------------------------------------------
-    // Obtém vértices da pirâmide
+    // Obtem vertices da piramide
     //--------------------------------------------------
-    PyramidVerts verts;
-    getPyramidVertices(s, verts);
+    const auto& verts = s.geometry.vertices;
     if (verts.size() < 5) return;
 
     //--------------------------------------------------
-    // Faces da pirâmide (base + 4 laterais)
+    // Faces da piramide (base + 4 laterais)
     //--------------------------------------------------
     struct Tri { int a, b, c; };
     Tri faces[6] =
@@ -994,7 +1105,7 @@ inline void snapPyramidToSurfaceA(Shape& s,
         return;
 
     //--------------------------------------------------
-    // Se j praticamente alinhado → só corrige penetração
+    // Se j praticamente alinhado → só corrige penetraao
     //--------------------------------------------------
     if (bestDot > 0.9995f)
     {
@@ -1012,7 +1123,7 @@ inline void snapPyramidToSurfaceA(Shape& s,
     }
 
     //--------------------------------------------------
-    // Rotação da face escolhida → supportNormal
+    // Rotaao da face escolhida → supportNormal
     //--------------------------------------------------
     glm::quat q = glm::rotation(bestNormal, supportNormal);
     q = glm::normalize(q);
@@ -1024,10 +1135,10 @@ inline void snapPyramidToSurfaceA(Shape& s,
     s.rot = glm::normalize(q * s.rot);
 
     //--------------------------------------------------
-    // Corrige penetração residual pós-rotação
+    // Corrige penetraao residual pós-rotaao
     //--------------------------------------------------
     verts.empty();
-    getPyramidVertices(s, verts);
+    //verts = s.geometry.vertices;
 
     float minDist = FLT_MAX;
     for (auto& v : verts)
@@ -1047,7 +1158,7 @@ inline void snapPyramidToSurfaceA(Shape& s,
     if (vn < 0.0f)
         s.vel -= supportNormal * vn;
 
-    // trava rotação residual pequena
+    // trava rotaao residual pequena
     if (glm::length2(s.angularVel) < 0.0001f)
         s.angularVel = glm::vec3(0);
 }
@@ -1058,6 +1169,7 @@ inline bool findSupportOnPlane(const Shape& s,
     glm::vec3& outSupportNormal)
 {
     const float SNAP_EPS = 0.02f;
+    float minDist = FLT_MAX;
 
     if (s.type == ShapeType::Sphere)
     {
@@ -1074,48 +1186,9 @@ inline bool findSupportOnPlane(const Shape& s,
         }
         return false;
     }
-
-    float minDist = FLT_MAX;
-
-    if (s.type == ShapeType::Rect)
+    else
     {
-        BoxVerts verts;
-        getBoxVertices(s, verts);
-
-        for (auto& v : verts)
-        {
-            float dist = glm::dot(v - planePoint, planeNormal);
-            minDist = std::min(minDist, dist);
-        }
-
-        if (std::abs(minDist) > SNAP_EPS)
-            return false;
-
-        glm::vec3 sum(0.0f);
-        int count = 0;
-
-        for (auto& v : verts)
-        {
-            float dist = glm::dot(v - planePoint, planeNormal);
-            if (std::abs(dist - minDist) <= 0.02f)
-            {
-                sum += v;
-                count++;
-            }
-        }
-
-        if (count == 0)
-            return false;
-
-        outContactPoint = sum / (float)count;
-        outSupportNormal = planeNormal;
-        return true;
-    }
-
-    if (s.type == ShapeType::Pyramid)
-    {
-        PyramidVerts verts;
-        getPyramidVertices(s, verts);
+        const auto& verts = s.geometry.vertices;
 
         for (auto& v : verts)
         {
@@ -1154,50 +1227,20 @@ inline bool findLocalSupport(const Shape& s,
     glm::vec3& outSupportNormal)
 {
     const float GROUND_EPS = 0.01f;
-
+    
     if (s.type == ShapeType::Sphere)
     {
         float radius = s.scale.x * s.radius;
         outContactPoint = s.pos - glm::vec3(0, radius, 0);
         outSupportNormal = glm::vec3(0, 1, 0);
+
         return outContactPoint.y <= GROUND_EPS;
     }
 
-    float minY = FLT_MAX;
-
-    if (s.type == ShapeType::Rect)
+    else
     {
-        BoxVerts verts;
-        getBoxVertices(s, verts);
-
-        for (auto& v : verts)
-            minY = std::min(minY, v.y);
-
-        if (minY > GROUND_EPS)
-            return false;
-
-        glm::vec3 sum(0.0f);
-        int count = 0;
-
-        for (auto& v : verts)
-        {
-            if (v.y <= minY + 0.02f)
-            {
-                sum += v;
-                count++;
-            }
-        }
-
-        outContactPoint = sum / (float)count;
-        outSupportNormal = glm::vec3(0, 1, 0);
-        return true;
-    }
-
-    if (s.type == ShapeType::Pyramid)
-    {
-        PyramidVerts verts;
-        getPyramidVertices(s, verts);
-
+        float minY = FLT_MAX;
+        const auto& verts = s.geometry.vertices;
         for (auto& v : verts)
             minY = std::min(minY, v.y);
 
@@ -1224,7 +1267,7 @@ inline bool findLocalSupport(const Shape& s,
     return false;
 }
 //----------------------------------------------------------
-// SOLUÇÃO DE CONTATO ENTRE CORPOS (CORRIGIDA)
+// SOLUaO DE CONTATO ENTRE CORPOS (CORRIGIDA)
 //----------------------------------------------------------
 // --- helpers para estabilidade entre box <-> pyramid ---------------------------------
 
@@ -1232,33 +1275,36 @@ static void solveContact(Contact& c, float dt) {
     Shape& A = *c.a; Shape& B = *c.b; 
     if (A.isStatic && B.isStatic) 
         return; 
-    if (c.penetration > 0.001f)
+    if (c.penetration > 0.01f)
     {
         wake(A);
         wake(B);
     }
+    /*
     // --- Novidade: cheque de "support" estvel entre box <-> pyramid ---- 
     auto isStable = [](const Shape& s) { 
         bool stable = s.isStatic || s.isSleeping || s.isGrounded; 
         return stable; 
-        }; 
+        }; */
     glm::vec3 up(0.0f, 1.0f, 0.0f); 
     glm::vec3 n = glm::normalize(c.normal); 
     if (glm::length2(n) < 1e-8f) 
-        return; // normal aponta de A -> B (convenção seu Contact) 
-    bool A_supports_B = isStable(A) && glm::dot(n, up) > 0.5f; 
-    bool B_supports_A = isStable(B) && glm::dot(-n, up) > 0.5f; 
-    // Se A é box e B é pirâmide: verificar centróide da face de B 
+        return; // normal aponta de A -> B (convenao seu Contact) 
+    
+    bool A_supports_B = isEffectivelyStable(A) && glm::dot(n, up) > 0.01f;
+    
+    bool B_supports_A = isEffectivelyStable(B) && glm::dot(-n, up) > 0.5f; 
+    // Se A e box e B e piramide: verificar centróide da face de B 
     if (A_supports_B && A.type == ShapeType::Rect && B.type == ShapeType::Rect) { 
         glm::vec3 faceCentroid, faceNormal; 
-        if (findPyramidContactFaceCentroid(B, n, faceCentroid, faceNormal)) { // se centroide da face de pirâmide projeta sobre face superior da box -> grounded 
+        if (findPyramidContactFaceCentroid(B, n, faceCentroid, faceNormal)) { // se centroide da face de piramide projeta sobre face superior da box -> grounded 
             if (isPointInsideBoxTopFace(A, faceCentroid)) { //printf("ponto rect rect "); //A.isGrounded = true; //A.isSleeping = true; 
                 /*B.isGrounded = true;
                 B.isSleeping = true; // atualiza histórico de grounded para hysteresis/stable detection 
                 B.lastGroundedPos = B.pos; 
                 B.lastGroundedRot = B.rot; */
-
-                B.isGrounded = true;
+                /*
+                * B.isGrounded = true;
                 A.isGrounded = true;
 
                 B.isSleeping = true;
@@ -1275,18 +1321,30 @@ static void solveContact(Contact& c, float dt) {
 
                 A.lastGroundedPos = A.pos;
                 A.lastGroundedRot = A.rot;
+                */
+                if (isEffectivelyStable(B)) {
+                    B.isGrounded = true;
+                    A.isGrounded = true;
+
+                    B.sleepTimer += dt;
+                    A.sleepTimer += dt;
+
+                }
+                B.groundedStableTimer += dt;
+                
             } 
-            else { //printf("permite tombar/rotacionar rect"); // permite tombar/rotacionar (não marcar como grounded) 
+            else { //printf("permite tombar/rotacionar rect"); // permite tombar/rotacionar (nAo marcar como grounded) 
                 B.isGrounded = false; 
                 A.isGrounded = true; //A.isSleeping = true; 
         } 
         } 
-        else { //printf("sem face detectada"); // sem face detectada, fallback: comportamento padrão (não forçar grounded) 
+        else { //printf("sem face detectada"); // sem face detectada, fallback: comportamento padrAo (nAo forçar grounded) 
             B.isGrounded = false; 
         } 
     } if (A_supports_B && A.type == ShapeType::Rect && B.type == ShapeType::Pyramid ) {
         glm::vec3 faceCentroid, faceNormal; 
-        if (findPyramidContactFaceCentroid(B, n, faceCentroid, faceNormal)) { // se centróide da face de pirâmide projeta sobre face superior da box -> grounded 
+        if (findPyramidContactFaceCentroid(B, n, faceCentroid, faceNormal)) { // se centróide da face de piramide projeta sobre face superior da box -> grounded 
+            printf(" ----- ");
             if (isPointInsideBoxTopFace(A, faceCentroid)) { //A.isGrounded = true; //A.isSleeping = true; 
                 /*B.isGrounded = true;
                 B.isSleeping = true; // atualiza histórico de grounded para hysteresis/stable detection 
@@ -1294,33 +1352,28 @@ static void solveContact(Contact& c, float dt) {
                 B.lastGroundedRot = B.rot; 
 
                 */
-
-                B.isGrounded = true;
+                printf(" +++++ ");
                 A.isGrounded = true;
-
-                B.isSleeping = true;
                 A.isSleeping = true;
+                if (isEffectivelyStable(B)) {
+                    B.isGrounded = true;
+                    
 
-                B.vel = glm::vec3(0.0f);
-                B.angularVel = glm::vec3(0.0f);
+                    B.sleepTimer += dt;
+                    A.sleepTimer += dt;
 
-                A.vel = glm::vec3(0.0f);
-                A.angularVel = glm::vec3(0.0f);
+                }
+                B.groundedStableTimer += dt;
 
-                B.lastGroundedPos = B.pos;
-                B.lastGroundedRot = B.rot;
-
-                A.lastGroundedPos = A.pos;
-                A.lastGroundedRot = A.rot;
-
-            } else { //printf("permite tombar/rotacionar rectpir"); // permite tombar/rotacionar (não marcar como grounded) 
-                B.isGrounded = false; 
+            }
+            else { //printf("permite tombar/rotacionar rect"); // permite tombar/rotacionar (nAo marcar como grounded) 
+                B.isGrounded = false;
                 A.isGrounded = true; //A.isSleeping = true; 
-            } 
-        } else { //printf("sem face detectada"); // sem face detectada, fallback: comportamento padrão (não forçar grounded) 
+            }
+        } else { //printf("sem face detectada"); // sem face detectada, fallback: comportamento padrAo (nAo forçar grounded) 
             B.isGrounded = false; 
         }
-    } // Se B é box e A é pirâmide (o caso invertido): mesma lógica simétrica 
+    } // Se B e box e A e piramide (o caso invertido): mesma lógica simetrica 
     else if (A_supports_B && A.type == ShapeType::Rect && B.type == ShapeType::Sphere)
     {
         const float VN_EPS = 0.05f;
@@ -1400,10 +1453,11 @@ static void solveContact(Contact& c, float dt) {
         else {
             A.isGrounded = false;
         }
-    } else { // casos gerais: mantemos a heurística anterior (se o suporte for "estvel", marca grounded) 
+    } else { // casos gerais: mantemos a heuristica anterior (se o suporte for "estvel", marca grounded) 
             if (A_supports_B) B.isGrounded = true; 
             if (B_supports_A) A.isGrounded = true; 
-    } float invMA = getInvMass(A); 
+    } 
+    float invMA = getInvMass(A); 
     float invMB = getInvMass(B); 
     glm::mat3 invIA = computeWorldInvInertia(A); 
     glm::mat3 invIB = computeWorldInvInertia(B); 
@@ -1411,7 +1465,7 @@ static void solveContact(Contact& c, float dt) {
     glm::vec3 rB = c.point - B.pos; 
     glm::vec3 vA = A.vel + glm::cross(A.angularVel, rA); 
     glm::vec3 vB = B.vel + glm::cross(B.angularVel, rB); 
-    glm::vec3 rv = vB - vA; float vn = glm::dot(rv, n); // Correção posicional (projeção) 
+    glm::vec3 rv = vB - vA; float vn = glm::dot(rv, n); // Correao posicional (projeao) 
             { const float slop = 0.001f; 
             const float percent = 0.7f; 
             float pen = std::max(c.penetration - slop, 0.0f); 
@@ -1421,9 +1475,13 @@ static void solveContact(Contact& c, float dt) {
                 if (!A.isStatic) A.pos -= corr * invMA; 
                 if (!B.isStatic) B.pos += corr * invMB; 
             } 
-    } // se corpos se separando ao longo da normal, não aplica impulso normal 
+    } // se corpos se separando ao longo da normal, nAo aplica impulso normal 
             if (vn > 0.0f) return; 
-            float e = restitutionGround; 
+            float bounceThreshold = 0.2f; // 20 cm/s
+
+            float e = (std::abs(vn) > bounceThreshold)
+                ? restitutionGround
+                : 0.0f;
             glm::vec3 rAxn = glm::cross(rA, n);
             glm::vec3 rBxn = glm::cross(rB, n);
             float denomN = invMA + invMB + glm::dot(invIA * rAxn, rAxn) + glm::dot(invIB * rBxn, rBxn);
@@ -1437,7 +1495,7 @@ static void solveContact(Contact& c, float dt) {
             if (!B.isStatic) { 
                 B.vel += impulseN * invMB; 
                 B.angularVel += invIB * glm::cross(rB, impulseN); 
-            } // --- Fricção tangencial (Coulomb) --- 
+            } // --- Fricao tangencial (Coulomb) --- 
             rv = (B.vel + glm::cross(B.angularVel, rB)) - (A.vel + glm::cross(A.angularVel, rA)); 
             glm::vec3 t = rv - glm::dot(rv, n) * n; 
             float tLen = glm::length(t); 
@@ -1461,46 +1519,47 @@ static void solveContact(Contact& c, float dt) {
 }
 
 // --- Sphere x Pyramid (face contact robusta) ---
-static bool spherePyramid(Shape& sphere, Shape& pyr, Contact& c) {
+static bool spherePyramid(Shape& sphere, Shape& pyr, Contact& c)
+{
     float r = sphereRadius(sphere);
 
-    PyramidFaces faces;
-    getPyramidFaces(pyr, faces);
+    const auto& faces = pyr.geometry.faces;
+    int faceCount = pyr.geometry.faceCount;
 
     float maxSeparation = -FLT_MAX;
     int maxIdx = -1;
+
     glm::vec3 sphereCenter = sphere.pos;
 
-    // Encontre a face mais "profunda" (maxima separacao)
-    for (int i = 0; i < (int)faces.size(); ++i) {
+    for (int i = 0; i < faceCount; ++i)
+    {
         float d = glm::dot(faces[i].n, sphereCenter) + faces[i].d;
-        if (d > r) {
-            // Esfera esta do lado de fora dessa face -- NÃO h contato!
+
+        if (d > r)
             return false;
-        }
-        if (d > maxSeparation) {
+
+        if (d > maxSeparation)
+        {
             maxSeparation = d;
             maxIdx = i;
         }
     }
 
-    // O ponto de contato estar na direcao da normal da face mais distante
-    const PyramidFace& refFace = faces[maxIdx];
-    glm::vec3 contactNormal = refFace.n;
-    float penetration = r - maxSeparation;
-    glm::vec3 contactPoint = sphereCenter - contactNormal * r;
+    if (maxIdx == -1)
+        return false;
+
+    const Face& refFace = faces[maxIdx];
 
     c.a = &pyr;
     c.b = &sphere;
-    c.point = contactPoint;
-    c.normal = contactNormal;
-    c.penetration = penetration;
+    c.normal = refFace.n;
+    c.penetration = r - maxSeparation;
+    c.point = sphereCenter - refFace.n * r;
 
     return true;
 }
-
 //----------------------------------------------------------
-// DETECÇÃO DE COLISÕES
+// DETECaO DE COLISÕES
 //----------------------------------------------------------
 static bool sphereSphere(Shape& a, Shape& b, Contact& c) {
     float ra = sphereRadius(a);
@@ -1521,11 +1580,17 @@ static bool sphereSphere(Shape& a, Shape& b, Contact& c) {
 // ---- BOX-BOX SAT ----
 static bool boxBox(const Shape& a, const Shape& b, Contact& c)
 {
+    /*
     BoxVerts vertsA;
     BoxVerts vertsB;
 
     getBoxVertices(a, vertsA);
-    getBoxVertices(b, vertsB);
+    getBoxVertices(b, vertsB);*/
+
+    const auto& vertsA = a.geometry.vertices;
+    const auto& vertsB = b.geometry.vertices;
+
+
 
     glm::mat3 Ra = glm::mat3_cast(a.rot);
     glm::mat3 Rb = glm::mat3_cast(b.rot);
@@ -1587,16 +1652,22 @@ static bool boxPyramid(const Shape& box,
     const Shape& pyr,
     Contact& c)
 {
+    /*
     BoxVerts vertsBox;
     PyramidVerts vertsPyr;
 
     getBoxVertices(box, vertsBox);
-    getPyramidVertices(pyr, vertsPyr);
+    getPyramidVertices(pyr, vertsPyr);*/
+
+    const auto& vertsBox = box.geometry.vertices;
+    const auto& vertsPyr = pyr.geometry.vertices;
+
 
     glm::mat3 R = glm::mat3_cast(box.rot);
 
-    PyramidFaces pyrFaces;
-    getPyramidFaces(pyr, pyrFaces);
+    const auto& faces = pyr.geometry.faces;
+    int faceCount = pyr.geometry.faceCount;
+
 
     float minOverlap = FLT_MAX;
     glm::vec3 bestAxis;
@@ -1632,12 +1703,12 @@ static bool boxPyramid(const Shape& box,
 
     // 5 pyramid face axes
     for (int i = 0; i < 5; ++i)
-        if (!testAxis(pyrFaces[i].n)) return false;
+        if (!testAxis(faces[i].n)) return false;
 
     // cross products
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 5; ++j)
-            if (!testAxis(glm::cross(R[i], pyrFaces[j].n)))
+            if (!testAxis(glm::cross(R[i], faces[j].n)))
                 return false;
 
     c.a = const_cast<Shape*>(&box);
@@ -1667,43 +1738,30 @@ static bool sphereBox(Shape& s, Shape& b, Contact& c) {
     c = { &b, &s, p, n, r - dist };
     return true;
 }
-inline void sleepCheck(Shape& s, float dt)
-{
-    if (s.isStatic || s.isDragging) {
-        //printf("** static + dragging** ");
-        //printf("%s", s.isSleeping);
-        return;
-    }
-
-    // =============================
-    // CONFIGURAÇÃO
-    // =============================
-
-    const float LIN_SLEEP_EPS = 0.03f;
-    const float ANG_SLEEP_EPS = 0.03f;     // tolerância angular
-    const float HARD_RESET_SPEED = 0.05f; // 5 cm/s real
-    const float HARD_RESET_SPEED2 = HARD_RESET_SPEED * HARD_RESET_SPEED;  // movimento real
+inline void sleepCheck(Shape& s) {
     const float SLEEP_TIME = 0.6f;
-    const float MIN_PARALLEL = 0.995f;
-
-    // =============================
-    // Se não est grounded, nunca dorme
-    // =============================
-
-    if (!s.isGrounded)
+    if (s.sleepTimer >= SLEEP_TIME || s.groundedStableTimer >= SLEEP_TIME)
     {
-        //printf(" **not grounded** ");
-        s.sleepTimer = 0.0f;
-        s.isSleeping = false;
+
+        s.vel = glm::vec3(0.0f);
+        s.angularVel = glm::vec3(0.0f);
+        s.isGrounded = true;
+        s.isSleeping = true;
+        s.isStatic = true;
         return;
     }
+    s.isSleeping = false;
+    s.sleepTimer = 0.0f;
+}
+inline void angularTestAndFix(Shape& s) {
+
+    // =============================
+    // TESTE ANGULAR (quase paralelo ao chAo)
+    // =============================
+
 
     float lin2 = glm::length2(s.vel);
     float ang2 = glm::length2(s.angularVel);
-
-    // =============================
-    // TESTE ANGULAR (quase paralelo ao chão)
-    // =============================
 
     glm::vec3 groundNormal(0, 1, 0);
     glm::vec3 supportPoint, supportNormal;
@@ -1716,25 +1774,13 @@ inline void sleepCheck(Shape& s, float dt)
     {
         float dotVal = glm::dot(glm::normalize(supportNormal), groundNormal);
 
-        // 0.95 ≈ até ~18 graus de inclinação
+        // 0.95 ≈ ate ~18 graus de inclinaao
         const float ALIGN_THRESHOLD = 0.95f;
 
-        isNearlyFlat = dotVal > ALIGN_THRESHOLD;
+        isNearlyFlat = dotVal > ALIGN_THRESHOLD && ang2 < 4e-4f;
     }
 
-    if (!s.isGrounded && !isNearlyFlat)
-    {
-        //printf(" **nearlyflat** ");
-        s.sleepTimer = 0.0f;
-        s.isSleeping = false;
-        return;
-    }
-
-    // =============================
-    // SNAP PREVENTIVO (opcional mas recomendado)
-    // =============================
-
-    if (ang2 < 4e-4f)
+    if (isNearlyFlat)
     {
         glm::vec3 contactPoint, supportNormal;
 
@@ -1746,75 +1792,163 @@ inline void sleepCheck(Shape& s, float dt)
                 snapPyramidToSurface(s, supportNormal, contactPoint);
         }
     }
+}
+inline void sleepFilter(Shape& s, float dt)
+{
+    if (s.isStatic || s.isDragging) {
+        return;
+    }
+
+
+    float lin2 = glm::length2(s.vel);
+    float ang2 = glm::length2(s.angularVel);
 
     // =============================
-    // TESTE DE MOVIMENTO
+    // CONFIGURAaO
     // =============================
+
+    const float LIN_SLEEP_EPS = 0.05f;
+    const float ANG_SLEEP_EPS = 0.05f;     // tolerancia angular
+    const float HARD_RESET_SPEED = 0.05f; // 5 cm/s real
+    const float HARD_RESET_SPEED2 = HARD_RESET_SPEED * HARD_RESET_SPEED;  // movimento real
+    
+    const float MIN_PARALLEL = 0.995f;
+
+
+
+    // =============================
+    // Se nAo est grounded, nunca dorme
+    // =============================
+
+    if (!s.isGrounded)
+    {
+        //printf(" -- l 1828 sleep timer reset --");
+        //printf(" **nearlyflat** ");
+        s.sleepTimer = 0.0f;
+    //sleeping = false
+        return;
+    }
 
     bool slowEnough =
         lin2 < LIN_SLEEP_EPS * LIN_SLEEP_EPS &&
         ang2 < ANG_SLEEP_EPS * ANG_SLEEP_EPS;
     //printf(" lin2 : %lf, ang2 : %lf ", lin2, ang2);
     //printf(" %d ", slowEnough);
-    if (slowEnough)
+    if (slowEnough && s.isGrounded)
     {
         // força zero absoluto para matar jitter
         s.vel = glm::vec3(0.0f);
         s.angularVel = glm::vec3(0.0f);
 
         s.sleepTimer += dt;
-
-        if (s.sleepTimer >= SLEEP_TIME)
-        {
-            s.isSleeping = true;
-            return;
-        }
     }
     else
     {
+        //hprintf(" -- l 1850 sleep timer -- ");
+        s.sleepTimer = 0.0f;
         // Só resetar se movimento for REAL
         if (!s.isGrounded &&
             (lin2 > HARD_RESET_SPEED2 || ang2 > HARD_RESET_SPEED2))
         {
             //printf(" ** hard reset ** ");
-            s.sleepTimer = 0.0f;
+            //s.sleepTimer = 0.0f;
             s.isSleeping = false;
         }
     }
 }
-
-//----------------------------------------------------------
-// UPDATE PHYSICS PRINCIPAL
-//----------------------------------------------------------
-//----------------------------------------------------------
-// UPDATE PHYSICS PRINCIPAL (COM BROADPHASE AABB)
-//----------------------------------------------------------
 void updatePhysics(Scene& scene, float dt)
 {
+
     if (dt <= 0.0f) return;
+
+
 
     auto& spheres = scene.spheresRef();
     auto& boxes = scene.rectsRef();
     auto& pyramids = scene.pyramidsRef();
+    /*
+
+    for (auto& s : spheres)  wakeIfThresholdPassed(s);
+    for (auto& b : boxes)    wakeIfThresholdPassed(b);
+    for (auto& p : pyramids) wakeIfThresholdPassed(p);*/
+    // -------------------------------------------------
+    // 8) Sleep check
+    // -------------------------------------------------
+    for (auto& s : spheres)  sleepCheck(s);
+    for (auto& b : boxes)    sleepCheck(b);
+    for (auto& p : pyramids) sleepCheck(p);
 
     // -------------------------------------------------
-    // 1) Integrar velocidade
+    // 1) Integrar gravidade velocidade (forças -> altera vel)
     // -------------------------------------------------
-    for (auto& s : spheres)  integrateVelocity(s, dt);
-    for (auto& b : boxes)    integrateVelocity(b, dt);
-    for (auto& p : pyramids) integrateVelocity(p, dt);
+    for (auto& s : spheres)  integrateGravity(s, dt);
+    for (auto& b : boxes)    integrateGravity(b, dt);
+    for (auto& p : pyramids) integrateGravity(p, dt);
+
+    /*
+    for (auto& s : spheres)  integrateRotation(s, dt);
+    for (auto& b : boxes)    integrateRotation(b, dt);
+    for (auto& p : pyramids) integrateRotation(p, dt);
+
+    */
+    // -------------------------------------------------
+    // 7) Integrar rotação (APÓS resolver impulsos)
+    // -------------------------------------------------
+    
 
     // -------------------------------------------------
-    // 2) Contato com chão
+    // 8) Sleep check
+    // -------------------------------------------------
+    for (auto& s : spheres)  sleepFilter(s, dt);
+    for (auto& b : boxes)    sleepFilter(b, dt);
+    for (auto& p : pyramids) sleepFilter(p, dt);
+
+    // -------------------------------------------------
+    // 2) Integrar posição (pos += vel * dt) — marca geometria dirty
+    // -------------------------------------------------
+    for (auto& s : spheres) {
+        integratePosition(s, dt);
+        integrateRotation(s, dt);
+    }
+    for (auto& b : boxes) {
+        integratePosition(b, dt);
+        integrateRotation(b, dt);
+    }
+    for (auto& p : pyramids) {
+        integratePosition(p, dt);
+        integrateRotation(p, dt);
+    }
+
+    // -------------------------------------------------
+    // 3) Atualizar geometria world (somente dirty)
+    //    — garante que todos os vértices/faces em world estão prontos
+    // -------------------------------------------------
+    auto updateGeom = [](auto& container)
+        {
+            for (auto& s : container)
+            {
+                if (s.geometryDirty)
+                {
+                    updateShapeWorldGeometry(s);
+                    s.geometryDirty = false;
+                }
+            }
+        };
+
+    updateGeom(spheres);
+    updateGeom(boxes);
+    updateGeom(pyramids);
+
+    // -------------------------------------------------
+    // 4) Contato com chão (após posições atualizadas e geometria em world)
     // -------------------------------------------------
     for (auto& s : spheres)  handleGroundContact(s, dt);
     for (auto& b : boxes)    handleGroundContact(b, dt);
     for (auto& p : pyramids) handleGroundContact(p, dt);
 
     // -------------------------------------------------
-    // 3) Broadphase AABB
+    // 5) Broadphase AABB (usando geometria atualizada)
     // -------------------------------------------------
-
     std::vector<AABB> sphereAABB(spheres.size());
     std::vector<AABB> boxAABB(boxes.size());
     std::vector<AABB> pyramidAABB(pyramids.size());
@@ -1829,88 +1963,56 @@ void updatePhysics(Scene& scene, float dt)
         pyramidAABB[i] = computeAABB(pyramids[i]);
 
     // -------------------------------------------------
-    // 4) Narrowphase (com filtro AABB)
+    // 6) Narrowphase & resolve
     // -------------------------------------------------
-
     Contact c;
 
-    // -------- esfera-esfera --------
+    // esfera-esfera
     for (size_t i = 0; i < spheres.size(); ++i)
         for (size_t j = i + 1; j < spheres.size(); ++j)
         {
-            if (!aabbOverlap(sphereAABB[i], sphereAABB[j]))
-                continue;
-
+            if (!aabbOverlap(sphereAABB[i], sphereAABB[j])) continue;
             if (sphereSphere(spheres[i], spheres[j], c))
                 solveContact(c, dt);
         }
 
-    // -------- esfera-box --------
+    // esfera-box
     for (size_t i = 0; i < spheres.size(); ++i)
         for (size_t j = 0; j < boxes.size(); ++j)
         {
-            if (!aabbOverlap(sphereAABB[i], boxAABB[j]))
-                continue;
-
+            if (!aabbOverlap(sphereAABB[i], boxAABB[j])) continue;
             if (sphereBox(spheres[i], boxes[j], c))
                 solveContact(c, dt);
         }
 
-    // -------- box-box --------
+    // box-box
     for (size_t i = 0; i < boxes.size(); ++i)
         for (size_t j = i + 1; j < boxes.size(); ++j)
         {
-            if (!aabbOverlap(boxAABB[i], boxAABB[j]))
-                continue;
-
+            if (!aabbOverlap(boxAABB[i], boxAABB[j])) continue;
             if (boxBox(boxes[i], boxes[j], c))
                 solveContact(c, dt);
         }
 
-    // -------- box-pirâmide --------
+    // box-piramide
     for (size_t i = 0; i < boxes.size(); ++i)
         for (size_t j = 0; j < pyramids.size(); ++j)
         {
-            if (!aabbOverlap(boxAABB[i], pyramidAABB[j]))
-                continue;
-
+            if (!aabbOverlap(boxAABB[i], pyramidAABB[j])) continue;
             if (boxPyramid(boxes[i], pyramids[j], c))
                 solveContact(c, dt);
         }
 
-    // -------- esfera-pirâmide --------
+    // esfera-piramide
     for (size_t i = 0; i < spheres.size(); ++i)
         for (size_t j = 0; j < pyramids.size(); ++j)
         {
-            if (!aabbOverlap(sphereAABB[i], pyramidAABB[j]))
-                continue;
-
+            if (!aabbOverlap(sphereAABB[i], pyramidAABB[j])) continue;
             if (spherePyramid(spheres[i], pyramids[j], c))
                 solveContact(c, dt);
         }
 
-    // -------------------------------------------------
-    // 5) Integrar posição e rotação
-    // -------------------------------------------------
-    for (auto& s : spheres) {
-        integratePosition(s, dt);
-        integrateRotation(s, dt);
-    }
+   
 
-    for (auto& b : boxes) {
-        integratePosition(b, dt);
-        integrateRotation(b, dt);
-    }
 
-    for (auto& p : pyramids) {
-        integratePosition(p, dt);
-        integrateRotation(p, dt);
-    }
-
-    // -------------------------------------------------
-    // 6) Sleep check
-    // -------------------------------------------------
-    for (auto& s : spheres)  sleepCheck(s, dt);
-    for (auto& b : boxes)    sleepCheck(b, dt);
-    for (auto& p : pyramids) sleepCheck(p, dt);
 }

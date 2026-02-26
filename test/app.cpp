@@ -85,35 +85,46 @@ bool App::init() {
 
     Shape pyramid;
     pyramid.type = ShapeType::Pyramid;
-    pyramid.id = (int)_scene.pyramidsRef().size();
+    //pyramid.id = (int)_scene.pyramidsRef().size();
+    pyramid.id = 3;
     pyramid.scale = glm::vec3(1.0f);
     pyramid.pos = glm::vec3(-3.0, 0.51, 0.0f);
     pyramid.mass = 1.0f;
+    pyramid.requestedFaceCount = 5;
+    pyramid.requestedVertexCount = 5;
+	setupPyramidShape(pyramid);
     pyramid.inertia = computeLocalInertiaTensor(pyramid);
     pyramid.invInertia = glm::inverse(pyramid.inertia);
     _scene.pyramidsRef().push_back(pyramid);
 
     Shape rect;
     rect.type = ShapeType::Rect;
-    rect.id = (int)_scene.rectsRef().size();
+    //rect.id = (int)_scene.rectsRef().size();
+    rect.id = 2;
     rect.pos = glm::vec3(0.0f, 3.0f, 0.0f);
     rect.scale = glm::vec3(2.0f, 1.0f, 1.0f);
     rect.mass = 3.0f;
+    rect.requestedFaceCount = 6;
+	rect.requestedVertexCount = 8;
+    setupRectShape(rect);
     rect.inertia = computeLocalInertiaTensor(rect);
     rect.invInertia = glm::inverse(rect.inertia);
     _scene.rectsRef().push_back(rect);
 
     Shape sphere;
     sphere.type = ShapeType::Sphere;
-    sphere.id = (int)_scene.spheresRef().size();
+    //sphere.id = (int)_scene.spheresRef().size();
+    sphere.id = 1;
     sphere.scale = glm::vec3(1.0f);
     sphere.radius = 1.0f;
-    sphere.pos = glm::vec3(3.0, 4.0, 0.0f);
+    sphere.pos = glm::vec3(3.0, 4.0, 1.0f);
     sphere.mass = 2.0f;
+    setupSphereShape(sphere, sphere.radius);
     sphere.inertia = computeLocalInertiaTensor(sphere);
     sphere.invInertia = glm::inverse(sphere.inertia);
     _scene.spheresRef().push_back(sphere);
-
+	
+    
     
     return true;
 }
@@ -221,14 +232,24 @@ void App::frame() {
             s->pos = currentTarget;
             s->vel = glm::vec3(0.0f);
             s->angularVel = glm::vec3(0.0f);
-
+            s->useGravity = true;
             s->isDragging = true;
             s->isSleeping = false;
             s->sleepTimer = 0.0f;
         }
-    
-
     }
+    /*
+    else if (!_dragging && _scene.selectionRef().type != ShapeType::None) {
+        Shape* s = getShapePtrFromScene(_scene.selectionRef());
+        if (s) {
+            s->isDragging = false;
+            s->isSleeping = false;
+			s->groundedStableTimer = 0.0f;
+            s->sleepTimer = 0.0f;
+        }
+    }
+    */
+    
 
     if (!rightNow && _rightPrev) {
         // release throw
